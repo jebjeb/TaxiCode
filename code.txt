@@ -1,0 +1,108 @@
+// Check engine light every 10 seconds when app is loaded
+jQuery(function($) {
+    engineChecker = setInterval(function(){checkEngineHealth()}, 10000);
+});
+
+// send data to back end for logging, processing, emailing...
+function checkEngineHealth(){
+    var $form = $('#check-engine-data');
+    var notify;
+    var data = {
+        "light": Light,
+    };
+    data = $form.serialize() + "&" + $.param(data);
+    $.ajax({
+        type: "POST",
+        dataType: "json",
+        url: "php-back-end.php",
+        data: data,
+        success: function(data) {
+            if (data["status"]=='negative') {
+                $('#responseMsg').text('The system booked you off due to the check engine light. You cannot receive dispatch orders but can run your meter for 48 hours.');
+                $('#needDisModal').modal('show');
+            } else if (data["status"]=='out_of_service') {
+                $('#responseMsg').text('Your cab has been taken out of service due to an unfixed vehicle issue.');
+                $('#needDisModal').modal('show');
+                setTimeout(function(){location.reload(true);}, 5000);
+            } else {
+                // all is good
+            }
+        }
+        ...
+    });
+}
+
+#PHP BACK END...
+function check_engine($valid_user, $light, $date, $conn){
+  $lightOnOff = $light == 'true' ? true : false;
+  $result = $conn->query("SELECT *	FROM driver_location WHERE uniqueid='".$valid_user."' LIMIT 1");
+  if (!$result) {
+    $response_array['status'] = 'error';
+  } elseif ($result->num_rows==0) {
+     $response_array['status'] = 'no_authorization'; 
+  } else {
+    $row = $result->fetch_object();
+    $cabinfo = $row->cabinfo;
+    $drivername = $row->drivername;
+    $company = $row->company;
+    $permit = $row->permit;
+    $gender = $row->gender;
+    $vehicleissue = $row->vehicleissue;
+    $troubletime = $row->troubletime;
+    $outofservice = $row->outofservice;	
+    $username = $row->username;		
+    if ($vehicleissue != null && ($troubletime + 172800) - time() <1) {		
+      email_authorities_IOS($username, $drivername, $permit, $company, $cabinfo, $gender, $date);
+      $conn->query("UPDATE driver_location SET outofservice=1 WHERE uniqueid='".$valid_user."'");	  
+      $response_array['status'] = 'out_of_service';
+      die(json_encode($response_array));
+      return;
+    }
+    if ($lightOnOff === true && $vehicleissue == null) {
+      email_authorities_check_engine($username, $drivername, $permit, $company, $cabinfo, $gender, $date);
+	}
+    $query = 'UPDATE driver_location SET vehicleissue = ?, troubletime = ? where uniqueid = ?';
+    $stmt = $conn->prepare($query);
+    $vehicleissue = 'check_engine_light';
+    $troubletime = time();
+    $stmt->bind_param("sss", $vehicleissue, $troubletime, $valid_user);
+    if ($stmt->execute()) {
+    $response_array['status'] = 'negative';
+    echo json_encode($response_array);
+    return;
+  }
+}
+
+// PHP embedded into apo upon start-up
+try {
+  $conn = db_connect_passengers();
+  $mysqlQuery = "
+    SELECT t1.*, t2.company, t2.vehicle, t2.cabinfo, t2.dutystatus, t2.status, t2.outofservice
+    FROM driver_info AS t1
+    LEFT JOIN driver_location AS t2
+    USING (uniqueid)
+    WHERE (t1.uniqueid = '".$valid_user."')
+  ";
+  $result = $conn->query($mysqlQuery);
+  if (!$result) {
+    throw new Exception("Technical error. Please try again later.");
+  } else if ($result->num_rows==0) {
+    throw new Exception("Could not find account details.");
+  } else {
+    $row = $result->fetch_object();
+    $outofservice = $row->outofservice;	
+  }
+  if ($outofservice != null) {
+    throw new Exception("Your cab has been taken out of service due to an unfixed vehicle issue.");      
+  }
+}
+catch(Exception $e) {
+  $errorMsg = $e->getMessage();
+}
+?>
+
+<!-- HTML that shows app on screen-->
+<div id="main-app-view" class="container-fluid" style="padding-right: 0; padding-left: 0;">                    
+<?php if (isset($errorMsg)){killSiteUnderContainerFluid($homepage, $errorMsg, true, $standAlone = $standAloneStat, true);}?>
+...Since an error was issued, driver will not have any access to the app
+</div>
